@@ -1,11 +1,11 @@
 /* source: http://marathon.csee.usf.edu/edge/edge_detection.html */
 /* URL: ftp://figment.csee.usf.edu/pub/Edge_Comparison/source_code/canny.src */
 
-/* ECPS 203 Assignment 1 solution, start for Assignment 2 */
+/* ECPS 203 Assignment 4 */
 
 /* off-by-one bugs fixed by Rainer Doemer, 10/05/23 */
 
-/* Last modified by Abyukth Kumar on 10/17/2023	*/
+/* Last modified by Abyukth Kumar on 10/28/2023	*/
 
 /* Quick Note : This code has been indented with tabstop=3" */
 /*******************************************************************************
@@ -62,13 +62,15 @@
 #include <math.h>
 #include <string.h>
 
-#define VERBOSE 	1		//For debugging
+#define VERBOSE 	0		//For debugging
 
 #define SUCCESS	0
 #define FAILED		1
 
-#define ROWS				240
-#define COLUMNS			320
+#define NUMBER_OF_FRAMES	30
+
+#define ROWS				1080
+#define COLUMNS			1920
 #define IMAGE_SIZE		ROWS*COLUMNS
 #define MAX_GRAY_VAL		255
 
@@ -102,44 +104,57 @@ void follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval);
 
 int main()
 {
-   char infilename[] = "golfcart.pgm";  						 /* Name of the i/p image */
-   char outfilename[] = "golfcart_s_0.6_l_0.3_h_0.8.pgm"; /* Name of the o/p image */
-   unsigned char image[IMAGE_SIZE];     						 /* The i/p image */
-   unsigned char edge[IMAGE_SIZE];      						 /* The o/p edge image */
+   int frame = 0;                      /* Iteration variable for frames */
+   char infilename[40];	               /* Name of the i/p image */
+   char outfilename[40];               /* Name of the o/p image */
+   unsigned char image[IMAGE_SIZE];	   /* The i/p image */
+   unsigned char edge[IMAGE_SIZE]; 	   /* The o/p edge image */
 
-   /****************************************************************************
-   * Read in the image. This read function allocates memory for the image.
-   ****************************************************************************/
-   
-	if(VERBOSE) 
-		printf("Reading the image %s.\n", infilename);
 
-   if(read_pgm_image(infilename, image) == FAILED)
-	{
-      fprintf(stderr, "Error reading the input image, %s.\n", infilename);
-      exit(EXIT_FAILURE);
-   }
+   for(frame = 1; frame <= NUMBER_OF_FRAMES; frame++)
+   {
+      sprintf(infilename, "video/Engineering%03d.pgm", frame);
+      
+		if(VERBOSE)
+			printf("Filename: %s\n", infilename);
 
-   /****************************************************************************
-   * Perform the edge detection. All of the work takes place here.
-   ****************************************************************************/
-   
-	if(VERBOSE) 
-		printf("Starting Canny edge detection.\n");
-   
-	canny(image, edge);
 
-   /****************************************************************************
-   * Write out the edge image to a file.
-   ****************************************************************************/
+      /*****************************************************************************
+      * Read in the image. This read function allocates memory for the image.
+ 		*****************************************************************************/
+   	if(VERBOSE) 
+   		printf("Reading the image %s.\n", infilename);
 
-   if(VERBOSE) 
-		printf("Writing the edge iname in the file %s.\n", outfilename);
-   
-	if(write_pgm_image(outfilename, edge) == FAILED)
-	{
-      fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
-      exit(1);
+      if(read_pgm_image(infilename, image) == FAILED)
+   	{
+         fprintf(stderr, "Error reading the input image, %s.\n", infilename);
+         exit(EXIT_FAILURE);
+      }
+
+      /****************************************************************************
+ 		* Perform the edge detection. All of the work takes place here.
+ 	   ****************************************************************************/
+      
+   	if(VERBOSE) 
+   		printf("Starting Canny edge detection.\n");
+      
+   	canny(image, edge);
+
+      /****************************************************************************
+      * Write out the edge image to a file.
+      ****************************************************************************/
+
+      if(VERBOSE) 
+   		printf("Writing the edge iname in the file %s.\n", outfilename);
+      
+   	sprintf(outfilename, "video/Engineering%03d_edges.pgm", frame);
+
+		if(write_pgm_image(outfilename, edge) == FAILED)
+   	{
+         fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
+         exit(1);
+      }
+		printf("Edge output generated: %s\n", outfilename); 
    }
 
    return(0); /* exit cleanly */
@@ -815,7 +830,7 @@ int read_pgm_image(char *infilename, unsigned char *image)
 	if((fp = fopen(infilename, "r")) == NULL)
 	{
       fprintf(stderr, "Error reading file in read_pgm_image()\n");
-      return(0);
+      return(FAILED);
    }
 
    /***************************************************************************
