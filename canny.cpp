@@ -1,11 +1,11 @@
 /* source: http://marathon.csee.usf.edu/edge/edge_detection.html */
 /* URL: ftp://figment.csee.usf.edu/pub/Edge_Comparison/source_code/canny.src */
 
-/* ECPS 203 Assignment 4 */
+/* ECPS 203 Assignment 5 */
 
 /* off-by-one bugs fixed by Rainer Doemer, 10/05/23 */
 
-/* Last modified by Abyukth Kumar on 10/28/2023	*/
+/* Last modified by Abyukth Kumar on 11/6/2023	*/
 
 /* Quick Note : This code has been indented with tabstop=3" */
 /*******************************************************************************
@@ -62,12 +62,16 @@
 #include <math.h>
 #include <string.h>
 
+#include "systemc.h"
+
 #define VERBOSE 	0		//For debugging
 
 #define SUCCESS	0
 #define FAILED		1
 
 #define NUMBER_OF_FRAMES	30
+
+#define STACK_SIZE		128*1024*1024
 
 #define ROWS				1080
 #define COLUMNS			1920
@@ -88,86 +92,299 @@
 #define M_PI 3.14159265356789202346
 #endif
 
-//Functions used to read and write the image data in PGM format 
-int read_pgm_image(char *infilename, unsigned char *image);
-int write_pgm_image(char *outfilename, unsigned char *image);
-
-//Functions used to perform canny edge detection
-void canny(unsigned char *image, unsigned char *edge);
-void gaussian_smooth(unsigned char *image, short int *smoothedim);
-void make_gaussian_kernel(float *kernel);
-void derivative_x_y(short int *smoothedim, short int *delta_x, short int *delta_y);
-void magnitude_x_y(short int *delta_x, short int *delta_y, short int *magnitude);
-void apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge);
-void non_max_supp(short *mag, short *gradx, short *grady, unsigned char *result);
-void follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval);
-
-int main()
+/************************************************************************************
+*								IMAGE structure to handle image files								*
+************************************************************************************/
+typedef struct Image_s
 {
-   int frame = 0;                      /* Iteration variable for frames */
-   char infilename[40];	               /* Name of the i/p image */
-   char outfilename[40];               /* Name of the o/p image */
-   unsigned char image[IMAGE_SIZE];	   /* The i/p image */
-   unsigned char edge[IMAGE_SIZE]; 	   /* The o/p edge image */
+   unsigned char img[IMAGE_SIZE];
 
-
-   for(frame = 1; frame <= NUMBER_OF_FRAMES; frame++)
+   Image_s(void)
    {
-      sprintf(infilename, "video/Engineering%03d.pgm", frame);
-      
-		if(VERBOSE)
-			printf("Filename: %s\n", infilename);
-
-
-      /*****************************************************************************
-      * Read in the image. This read function allocates memory for the image.
- 		*****************************************************************************/
-   	if(VERBOSE) 
-   		printf("Reading the image %s.\n", infilename);
-
-      if(read_pgm_image(infilename, image) == FAILED)
-   	{
-         fprintf(stderr, "Error reading the input image, %s.\n", infilename);
-         exit(EXIT_FAILURE);
+      for (int i=0; i<IMAGE_SIZE; i++)
+      {
+         img[i] = 0;
       }
-
-      /****************************************************************************
- 		* Perform the edge detection. All of the work takes place here.
- 	   ****************************************************************************/
-      
-   	if(VERBOSE) 
-   		printf("Starting Canny edge detection.\n");
-      
-   	canny(image, edge);
-
-      /****************************************************************************
-      * Write out the edge image to a file.
-      ****************************************************************************/
-
-      if(VERBOSE) 
-   		printf("Writing the edge iname in the file %s.\n", outfilename);
-      
-   	sprintf(outfilename, "video/Engineering%03d_edges.pgm", frame);
-
-		if(write_pgm_image(outfilename, edge) == FAILED)
-   	{
-         fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
-         exit(1);
-      }
-		printf("Edge output generated: %s\n", outfilename); 
    }
 
-   return(0); /* exit cleanly */
+   Image_s& operator=(const Image_s& copy)
+   {
+      for (int i=0; i<IMAGE_SIZE; i++)
+      {
+         img[i] = copy.img[i];
+      }
+      return *this;
+   }
+
+   operator unsigned char*()
+   {
+      return img;
+   }
+
+   unsigned char& operator[](const int index)
+   {
+      return img[index];
+   }
+}IMAGE;
+
+/************************************************************************************
+*											  Stimulus Module												*
+************************************************************************************/
+SC_MODULE(Stimulus)
+{
+	IMAGE image;
+	sc_fifo_out<IMAGE> outPort;	
+	
+	int read_pgm_image(char *infilename, unsigned char *image);
+	void stim_read_image();	
+	
+	SC_CTOR(Stimulus)
+	{
+		SC_THREAD(stim_read_image);
+		set_stack_size(STACK_SIZE);
+	}
+};
+
+/************************************************************************************
+*											   Monitor Module												*
+************************************************************************************/
+SC_MODULE(Monitor)
+{
+	IMAGE edge;
+	sc_fifo_in<IMAGE> inPort;
+	
+	int write_pgm_image(char *outfilename, unsigned char *image);
+	void mon_write_image();
+
+	SC_CTOR(Monitor)
+	{
+		SC_THREAD(mon_write_image);
+		set_stack_size(STACK_SIZE);
+	}
+};
+
+/************************************************************************************
+*											   DataIn Module												*
+************************************************************************************/
+SC_MODULE(DataIn)
+{
+	IMAGE image;
+	sc_fifo_in<IMAGE> inPort;
+	sc_fifo_out<IMAGE> outPort;
+
+	void din_def();
+
+	SC_CTOR(DataIn)
+	{
+		SC_THREAD(din_def);
+		set_stack_size(STACK_SIZE);		
+	}
+};
+
+/************************************************************************************
+*											   DataOut Module												*
+************************************************************************************/
+SC_MODULE(DataOut)
+{
+   IMAGE image;
+   sc_fifo_in<IMAGE> inPort;
+   sc_fifo_out<IMAGE> outPort;
+
+   void dout_def();
+
+   SC_CTOR(DataOut)
+   {
+      SC_THREAD(dout_def);
+      set_stack_size(STACK_SIZE);
+   }
+};
+
+/************************************************************************************
+*											  DUT Module (canny)											*
+************************************************************************************/
+SC_MODULE(DUT)
+{
+	IMAGE image, edge;
+	sc_fifo_in<IMAGE> inPort;
+	sc_fifo_out<IMAGE> outPort;
+	
+   // Functions used to perform canny edge detection
+	void canny(unsigned char *image, unsigned char *edge);
+   void gaussian_smooth(unsigned char *image, short int *smoothedim);
+   void make_gaussian_kernel(float *kernel);
+   void derivative_x_y(short int *smoothedim, short int *delta_x, short int *delta_y);
+   void magnitude_x_y(short int *delta_x, short int *delta_y, short int *magnitude);
+   void apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge);
+   void non_max_supp(short *mag, short *gradx, short *grady, unsigned char *result);
+   void follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval);
+
+	void dut_canny();
+
+	SC_CTOR(DUT)
+	{
+		SC_THREAD(dut_canny);
+		set_stack_size(STACK_SIZE);
+	}	
+};
+
+/************************************************************************************
+*											   Platform Module    										*
+************************************************************************************/
+SC_MODULE(Platform)
+{
+	sc_fifo_in<IMAGE> pf_inPort;
+	sc_fifo_out<IMAGE> pf_outPort;
+
+	sc_fifo<IMAGE> q1;
+	sc_fifo<IMAGE> q2;	
+
+	DataIn din;
+	DUT canny;
+	DataOut dout;
+
+	SC_CTOR(Platform):q1("q1", 1), q2("q2", 1), canny("canny"), din("din"), dout("dout")
+	{
+		din.inPort.bind(pf_inPort);
+		din.outPort.bind(q1);
+
+		canny.inPort.bind(q1);
+		canny.outPort.bind(q2);
+
+		dout.inPort.bind(q2);
+		dout.outPort.bind(pf_outPort);	
+	}
+};
+
+/************************************************************************************
+*											      Top Module      										*
+************************************************************************************/
+SC_MODULE(Top)
+{
+	sc_fifo<IMAGE> q1;
+	sc_fifo<IMAGE> q2;	
+
+	Stimulus stimulus;
+	Platform platform;
+	Monitor monitor;
+
+	SC_CTOR(Top):q1("q1", 1), q2("q2", 1), stimulus("stimulus"), platform("platform"), monitor("monitor")
+	{
+		stimulus.outPort.bind(q1);
+		
+		platform.pf_inPort.bind(q1);
+		platform.pf_outPort.bind(q2);
+			
+		monitor.inPort.bind(q2);	
+	}		
+};
+
+/***********************************************************************************
+ * 											main() Function
+ ***********************************************************************************
+ * Description :  Executes the canny edge detection of an image input
+ * Arguments   :  int argc       -  Number of command line arguments
+ *                char *argv[]   -  Command line arguments  
+ * Return      :  0 if success, else Failed
+ **********************************************************************************/
+int sc_main(int argc, char *argv[])
+{
+	Top Top("top");
+	sc_start();
+
+	return 0;
+}
+
+/**********************************************************************************
+*											Function Definitions
+**********************************************************************************/
+
+
+/******************************************************************************
+* FUNCTION: 	read_pgm_image -  Method of module Stimulus
+* PURPOSE: 		This function reads in an image in PGM format.All comments in the 
+* 					header are discarded in the process of reading the image
+* ARGUMENTS:	char *infilename		-	File containing the image data
+* 					unsigned char *image	-	Buffer to store image data
+* RETURN:		0	-	Failure
+* 					1	-	Success
+******************************************************************************/
+int Stimulus::read_pgm_image(char *infilename, unsigned char *image)
+{
+   FILE *fp;
+   char buf[71];
+
+   /***************************************************************************
+   * Open the input image file for reading
+   ***************************************************************************/
+   
+	if((fp = fopen(infilename, "r")) == NULL)
+	{
+      fprintf(stderr, "Error reading file in read_pgm_image()\n");
+      return(FAILED);
+   }
+
+   /***************************************************************************
+   * Verify that the image is in PGM format, read in the number of columns
+   * and ROWS in the image and scan past all of the header information.
+   ***************************************************************************/
+   
+	fgets(buf, 70, fp);
+   if(strncmp(buf,"P5",2) != 0)
+	{
+      fprintf(stderr, "The file %s is not in PGM format in ", infilename);
+      fprintf(stderr, "read_pgm_image().\n");
+      fclose(fp);
+      return(FAILED);
+   }
+
+   do{ fgets(buf, 70, fp);}while(buf[0] == '#');  /* skip all comment lines */
+   do{ fgets(buf, 70, fp);}while(buf[0] == '#');  /* skip all comment lines */
+
+   if(ROWS != fread(image, COLUMNS, ROWS, fp))
+	{
+      fprintf(stderr, "Error reading the image data in read_pgm_image().\n");
+      fclose(fp);
+      return(FAILED);
+ 	}
+
+   fclose(fp);
+   return(0);
+}
+
+/********************************************************************
+ * Function 	:	stim_read_image()
+ * Description	:	Method of module Stimulus used to read pgm image 
+ * 					and write image to outPort of Stimulus
+ * Arguments	:	None
+ * Return		:	None	
+ *******************************************************************/
+void Stimulus::stim_read_image()
+{
+	int frame;
+	char infilename[40];
+
+	for(frame = 1; frame <= NUMBER_OF_FRAMES; frame++)
+   {
+      sprintf(infilename, "video/Engineering%03d.pgm", frame);
+
+		if(read_pgm_image(infilename, image)== FAILED)
+		{
+			fprintf(stderr, "Error reading the input image, %s.\n", infilename);
+   		exit(EXIT_FAILURE);		
+		}
+
+		outPort.write(image);
+	}
 }
 
 /*******************************************************************************
-* FUNCTION: 	canny
+* FUNCTION: 	canny -  Method of module DUT
 * PURPOSE: 		To perform canny edge detection.
 * ARGUMENTS: 	unsigned char *image -	Buffer containing image data
 * 					unsigned char *edge	-	Buffer to store o/p edge image data
 * RETURN: 		None
 *******************************************************************************/
-void canny(unsigned char *image, unsigned char *edge)
+void DUT::canny(unsigned char *image, unsigned char *edge)
 {
    unsigned char nms[IMAGE_SIZE];    /* Points that are local maximal magnitude. */
    short int smoothedim[IMAGE_SIZE]; /* The image after gaussian smoothing.      */
@@ -222,6 +439,129 @@ void canny(unsigned char *image, unsigned char *edge)
 	apply_hysteresis(magnitude, nms, edge);
 }
 
+/**********************************************************************
+ * Function    :  din_def()
+ * Description :  Method of module DataIn used to read image from
+ *                inPort and write it to the outPort infinitely
+ * Arguments   :  None
+ * Return      :  None
+ *********************************************************************/
+void DataIn::din_def()
+{
+	while(1)
+	{
+		inPort.read(image);
+		outPort.write(image);
+	}
+}
+
+/**********************************************************************
+ * Function    :  dout_def()
+ * Description :  Method of module DataOut used to read edge image
+ *                from inPort and write it to the outPort infinitely
+ * Arguments   :  None
+ * Return      :  None
+ *********************************************************************/
+void DataOut::dout_def()
+{
+   while(1)
+   {
+      inPort.read(image);
+     	outPort.write(image);
+   }
+}
+
+/**********************************************************************
+ * Function    :  dut_canny()
+ * Description :  Method of module DUT used to read image from inPort, 
+ *                find the edge output using canny() and write edge
+ *                image to outPort
+ * Arguments   :  None
+ * Return      :  None
+ *********************************************************************/
+void DUT::dut_canny()
+{
+	while(1)
+	{
+		inPort.read(image);
+		canny(image, edge);
+		outPort.write(edge);
+	}
+}
+
+/******************************************************************************
+* FUNCTION:		write_pgm_image - Method of module Monitor
+* PURPOSE:		This function writes an image in PGM format
+* ARGUMENTS:	char *outfilename		-	File to write edge output data
+* 					unsigned char *image	-	Buffer containing edge output data
+* RETURN:		0	-	Failure
+* 					1	-	Success
+******************************************************************************/
+int Monitor::write_pgm_image(char *outfilename, unsigned char *image)
+{
+   FILE *fp;
+   
+   /***************************************************************************
+   * Open the output image file for writing if a filename was given. If no
+   * filename was provided, set fp to write to standard output.
+   ***************************************************************************/
+   
+   if((fp = fopen(outfilename, "w")) == NULL)
+	{
+         fprintf(stderr, "Error writing the file inside write_pgm_image()\n");
+         return(FAILED);
+   }
+
+   /***************************************************************************
+   * Write the header information to the PGM file.
+   ***************************************************************************/
+   
+	fprintf(fp, "P5\n%d %d\n", COLUMNS, ROWS);
+  	
+	fprintf(fp, "%d\n", MAX_GRAY_VAL);
+
+   /***************************************************************************
+   * Write the image data to the file.
+   ***************************************************************************/
+   if(ROWS != fwrite(image, COLUMNS, ROWS, fp))
+	{
+      fprintf(stderr, "Error writing the image data in write_pgm_image().\n");
+      fclose(fp);
+      return(FAILED);
+   }
+
+   fclose(fp);
+   return(0);
+}
+
+/**********************************************************************
+ * Function    :  mon_write_image()
+ * Description :  Method of module Monitor used to read edge image
+ *                from inPort of Monitor and write it to an image file
+ * Arguments   :  None
+ * Return      :  None
+ *********************************************************************/
+void Monitor::mon_write_image()
+{
+	int frame = 0;
+	char outfilename[40];
+  
+	for(frame = 1; frame <= NUMBER_OF_FRAMES; frame++)
+	{
+		inPort.read(edge);
+
+		sprintf(outfilename, "video/Engineering%03d_edges.pgm", frame);
+	 
+		if(write_pgm_image(outfilename, edge) == FAILED)
+   	{
+   		fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
+   		exit(1);
+		}
+		
+		printf("Edge output generated: %s\n", outfilename);	
+	}
+}
+
 /*******************************************************************************
 * FUNCTION: 	magnitude_x_y
 * PURPOSE: 		Compute the magnitude of the gradient. This is the square root of
@@ -231,7 +571,7 @@ void canny(unsigned char *image, unsigned char *edge)
 * 					short int *magnitude	-	Variable to store magnitude of gradient 
 * RETURN:		NONE
 *******************************************************************************/
-void magnitude_x_y(short int *delta_x, short int *delta_y, short int *magnitude)
+void DUT::magnitude_x_y(short int *delta_x, short int *delta_y, short int *magnitude)
 {
    int r, c, pos, sq1, sq2;
 
@@ -264,7 +604,7 @@ void magnitude_x_y(short int *delta_x, short int *delta_y, short int *magnitude)
 * 					short int *delta_y		-	Derivative in y direction				
 * RETURN:		None
 *******************************************************************************/
-void derivative_x_y(short int *smoothedim, short int *delta_x,
+void DUT::derivative_x_y(short int *smoothedim, short int *delta_x,
 		    short int *delta_y)
 {
    int r, c, pos;
@@ -319,7 +659,7 @@ void derivative_x_y(short int *smoothedim, short int *delta_x,
 * 					short int *smoothedim	-	Buffer to store smoothened image	
 * RETURN:		None
 *******************************************************************************/
-void gaussian_smooth(unsigned char *image, short int *smoothedim)
+void DUT::gaussian_smooth(unsigned char *image, short int *smoothedim)
 {
    int r, c, rr, cc;     			/* Counter variables */
    int center = WINDOWSIZE/2; 	/* Half of the windowsize */
@@ -395,7 +735,7 @@ void gaussian_smooth(unsigned char *image, short int *smoothedim)
 * ARGUMENTS:	float *kernel	-	Buffer to store kernel coefficients
 * RETURN: 		None
 *******************************************************************************/
-void make_gaussian_kernel(float *kernel)
+void DUT::make_gaussian_kernel(float *kernel)
 {
    int i; 
 	int center = WINDOWSIZE/2;
@@ -434,7 +774,7 @@ void make_gaussian_kernel(float *kernel)
 * 					short lowval					-	Lower threshold value
 * RETURN:		None
 *******************************************************************************/
-void follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval)
+void DUT::follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval)
 {
    short *tempmagptr;
    unsigned char *tempmapptr;
@@ -465,7 +805,7 @@ void follow_edges(unsigned char *edgemapptr, short *edgemagptr, short lowval)
 *					unsigned char *edge
 * RETURN:		None
 *******************************************************************************/
-void apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge)
+void DUT::apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge)
 {
    int r, c, pos, numedges, highcount, lowthreshold, highthreshold, hist[32768];
 	short int maximum_mag = 0;
@@ -592,7 +932,7 @@ void apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge)
 }
 
 /*******************************************************************************
-* FUNCTION:		non_max_supp
+* FUNCTION:		non_max_supp 
 * PURPOSE: 		This routine applies non-maximal suppression to the magnitude of
 * 					the gradient image.
 * ARGUMENTS:	short *mag
@@ -601,7 +941,7 @@ void apply_hysteresis(short int *mag, unsigned char *nms, unsigned char *edge)
 * 					unsigned char *result				
 * RETURN:		None
 *******************************************************************************/
-void non_max_supp(short *mag, short *gradx, short *grady, unsigned char *result) 
+void DUT::non_max_supp(short *mag, short *gradx, short *grady, unsigned char *result) 
 {
 	int rowcount, colcount, count;
    short *magrowptr, *magptr;
@@ -809,99 +1149,6 @@ void non_max_supp(short *mag, short *gradx, short *grady, unsigned char *result)
  	}
 }
 
-/******************************************************************************
-* FUNCTION: 	read_pgm_image
-* PURPOSE: 		This function reads in an image in PGM format.All comments in the 
-* 					header are discarded in the process of reading the image
-* ARGUMENTS:	char *infilename		-	File containing the image data
-* 					unsigned char *image	-	Buffer to store image data
-* RETURN:		0	-	Failure
-* 					1	-	Success
-******************************************************************************/
-int read_pgm_image(char *infilename, unsigned char *image)
-{
-   FILE *fp;
-   char buf[71];
 
-   /***************************************************************************
-   * Open the input image file for reading
-   ***************************************************************************/
-   
-	if((fp = fopen(infilename, "r")) == NULL)
-	{
-      fprintf(stderr, "Error reading file in read_pgm_image()\n");
-      return(FAILED);
-   }
 
-   /***************************************************************************
-   * Verify that the image is in PGM format, read in the number of columns
-   * and ROWS in the image and scan past all of the header information.
-   ***************************************************************************/
-   
-	fgets(buf, 70, fp);
-   if(strncmp(buf,"P5",2) != 0)
-	{
-      fprintf(stderr, "The file %s is not in PGM format in ", infilename);
-      fprintf(stderr, "read_pgm_image().\n");
-      fclose(fp);
-      return(FAILED);
-   }
 
-   do{ fgets(buf, 70, fp);}while(buf[0] == '#');  /* skip all comment lines */
-   do{ fgets(buf, 70, fp);}while(buf[0] == '#');  /* skip all comment lines */
-
-   if(ROWS != fread(image, COLUMNS, ROWS, fp))
-	{
-      fprintf(stderr, "Error reading the image data in read_pgm_image().\n");
-      fclose(fp);
-      return(FAILED);
- 	}
-
-   fclose(fp);
-   return(0);
-}
-
-/******************************************************************************
-* FUNCTION:		write_pgm_image
-* PURPOSE:		This function writes an image in PGM format
-* ARGUMENTS:	char *outfilename		-	File to write edge output data
-* 					unsigned char *image	-	Buffer containing edge output data
-* RETURN:		0	-	Failure
-* 					1	-	Success
-******************************************************************************/
-int write_pgm_image(char *outfilename, unsigned char *image)
-{
-   FILE *fp;
-   
-   /***************************************************************************
-   * Open the output image file for writing if a filename was given. If no
-   * filename was provided, set fp to write to standard output.
-   ***************************************************************************/
-   
-   if((fp = fopen(outfilename, "w")) == NULL)
-	{
-         fprintf(stderr, "Error writing the file inside write_pgm_image()\n");
-         return(FAILED);
-   }
-
-   /***************************************************************************
-   * Write the header information to the PGM file.
-   ***************************************************************************/
-   
-	fprintf(fp, "P5\n%d %d\n", COLUMNS, ROWS);
-  	
-	fprintf(fp, "%d\n", MAX_GRAY_VAL);
-
-   /***************************************************************************
-   * Write the image data to the file.
-   ***************************************************************************/
-   if(ROWS != fwrite(image, COLUMNS, ROWS, fp))
-	{
-      fprintf(stderr, "Error writing the image data in write_pgm_image().\n");
-      fclose(fp);
-      return(FAILED);
-   }
-
-   fclose(fp);
-   return(0);
-}
