@@ -1,0 +1,26 @@
+ECPS203	- 	Embedded Systems Modeling and Design
+Author	-	Abyukth Kumar
+Date	-	11/28/2023
+
+Pipelined and parallel DUT module of the Canny Edge Decoder
+
+Issues faced during compilation:
+
+1. Simulation time was obtained successfully in step 5 but the image generated does not match the reference image.
+2. Conversion error while calculating value of fps
+
+
+Solution to these issues:
+
+1. There were missing pixels when I viewed the image. I found that the range should have been (ROWS/4)*1 - 1 but I put (ROWS/4)*1. Once I fixed it, the images matched.
+2. I calculated fps by using 1/(t-t_previous) instead of 1/(t-t_previous).to_seconds(). Once I fixed that, it worked.
+
+
+TABLE WITH DELAY TIMINGS IN EACH STEP:
+
+MODEL 			   FRAME DELAY  	THROUGHPUT 		TOTAL SIMULATED TIME
+cannyA8_step1 			0 ms 								0 ms
+cannyA8_step2 		12220 ms 							59320 ms
+cannyA8_step3 		12220 ms 		0.549 FPS 			59320 ms
+cannyA8_step4 		13930 ms 		0.549 FPS 		 	59320 ms
+cannyA8_step5 		11800 ms 		0.971 FPS 		 	33762 ms
