@@ -1,26 +1,51 @@
 ECPS203	- 	Embedded Systems Modeling and Design
 Author	-	Abyukth Kumar
-Date	-	11/28/2023
+Date	-	12/4/2023
 
-Pipelined and parallel DUT module of the Canny Edge Decoder
+Throughput optimization of the Canny Edge Detector
 
-Issues faced during compilation:
+PERFORMANCE MEASUREMENT OF CANNY EDGE DETECTOR ON RASPBERRY PI
 
-1. Simulation time was obtained successfully in step 5 but the image generated does not match the reference image.
-2. Conversion error while calculating value of fps
+	Results obtained using -O2 compiler optimization
+
+		gaussian_smooth run time	  :	0.247302s
+		    |___g_kernel segment run time :	   |--- 0.000008s
+		    |___blur_x segment run time	  :	   |--- 0.069422s
+		    |___blur_y segment run time	  :	   |--- 0.171353s
+		derivative_x_y run time		  :	0.154338s
+		magnitude_x_y run time		  :	0.035429s
+		non_max_supp run time		  :	0.134024s
+		apply_hysteresis run time	  :	0.125131s
+		    |___follow_edges run time	  :	   |--- 0.050369s
 
 
-Solution to these issues:
+	Results obtained using -O2 compiler optimization and changing float to int inside non_max_supp
 
-1. There were missing pixels when I viewed the image. I found that the range should have been (ROWS/4)*1 - 1 but I put (ROWS/4)*1. Once I fixed it, the images matched.
-2. I calculated fps by using 1/(t-t_previous) instead of 1/(t-t_previous).to_seconds(). Once I fixed that, it worked.
+		gaussian_smooth run time	  :	0.250281s
+		    |___g_kernel segment run time :	   |--- 0.000008s
+		    |___blur_x segment run time	  :	   |--- 0.069428s
+		    |___blur_y segment run time	  :	   |--- 0.174515s
+		derivative_x_y run time		  :	0.153813s
+		magnitude_x_y run time		  :	0.035421s
+		non_max_supp run time		  :	0.450132s
+		apply_hysteresis run time	  :	0.124607s
+		    |___follow_edges run time	  :	   |--- 0.050471s
+
+	From the above results, you can observe that the time taken to execute non_max_supp becomes higher when we change float to int. So for the final canny source code, it is not recommended to implement the timings obtained with fixed-point arithmetic.
+
+When we back-annotate the improved timing observed in the raspberry pi into the source code of our SystemC model, I was able to achieve an FPS of 6.494 which is significantly higher than the previous FPS obtained. The following table shows the performance results:
 
 
 TABLE WITH DELAY TIMINGS IN EACH STEP:
 
 MODEL 			   FRAME DELAY  	THROUGHPUT 		TOTAL SIMULATED TIME
-cannyA8_step1 			0 ms 								0 ms
-cannyA8_step2 		12220 ms 							59320 ms
-cannyA8_step3 		12220 ms 		0.549 FPS 			59320 ms
-cannyA8_step4 		13930 ms 		0.549 FPS 		 	59320 ms
-cannyA8_step5 		11800 ms 		0.971 FPS 		 	33762 ms
+cannyA9_step1		 1509ms			 6.494FPS			   4974ms
+cannyA9_step2		 1509ms			 6.494FPS			   4974ms
+
+After replacing the floating-point calculations with fixed-point calculations, there is no change in total simulated time or throughput. But while finding the difference between the reference image and obtained image, there was a mismatch of 2 pixels. 
+
+Conclusion:
+
+I have included compiler optimization ( -O2 ). I have back annotated the timings obtained from compiler optimization into my SystemC source code. This significantly increased my FPS.
+
+The canny.cpp file that I have submitted is the cannyA9_step2.cpp file

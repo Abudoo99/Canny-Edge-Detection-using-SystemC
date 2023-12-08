@@ -1,7 +1,9 @@
 /* source: http://marathon.csee.usf.edu/edge/edge_detection.html */
 /* URL: ftp://figment.csee.usf.edu/pub/Edge_Comparison/source_code/canny.src */
 
-/* ECPS203 Assignment 6 solution*/
+/* ECPS203 Assignment 9 */
+
+/* Author : Abyukth Kumar */
 
 /* off-by-one bugs fixed by Rainer Doemer, 10/05/23 */
 
@@ -171,7 +173,8 @@ typedef struct Fimage_s
 SC_MODULE(Stimulus){
 	IMAGE imageout;
 	sc_fifo_out<IMAGE> ImgOut;
-	sc_fifo_out<sc_time> TimeOut;
+	sc_fifo_out<sc_time> StartTime;
+
 	/******************************************************************************
 	* Function: read_pgm_image
 	* Purpose: This function reads in an image in PGM format. The image can be
@@ -240,13 +243,13 @@ SC_MODULE(Stimulus){
 	{
 	   int i=0, n=0;
 	   char infilename[40];
-		sc_time t;
+	   sc_time t;
 
 	   for(i=0; i<IMG_NUM; i++)
 	   {
 	      n = i % AVAIL_IMG;
 	      sprintf(infilename, IMG_IN, n+1);
-			
+
 	      /****************************************************************************
 	      * Read in the image.
 	      ****************************************************************************/
@@ -256,11 +259,10 @@ SC_MODULE(Stimulus){
 	         exit(1);
 	      }
 	      ImgOut.write(imageout);
-			
-			t = sc_time_stamp();
-			printf("%s: Stimulus sent frame %d.\n", t.to_string().c_str(), i+1);
-	   	TimeOut.write(t);
-		}
+	      t = sc_time_stamp();
+		  printf("%9s: Stimulus sent frame%3d.\n", t.to_string().c_str(), n+1);
+	      StartTime.write(t);
+	   }
 	}
 
 	SC_CTOR(Stimulus)
@@ -273,7 +275,8 @@ SC_MODULE(Stimulus){
 SC_MODULE(Monitor){
 	IMAGE imagein;
 	sc_fifo_in<IMAGE>  ImgIn;
-	sc_fifo_in<sc_time> TimeIn;
+	sc_fifo_in<sc_time> StartTime;
+
 	/******************************************************************************
 	* Function: write_pgm_image
 	* Purpose: This function writes an image in PGM format. The file is either
@@ -323,37 +326,35 @@ SC_MODULE(Monitor){
 	{
 	   char outfilename[128];    /* Name of the output "edge" image */
 	   int i, n;
-		float fps;		/* Variable used to calculate throughput */
-		sc_time t, t2, delay;
-		sc_time previous = SC_ZERO_TIME;
+	   sc_time t1,t2,t,t3,t_delay;
 
 	   for(i=0; i<IMG_NUM; i++)
 	   {
 	      ImgIn.read(imagein);
-
+	      StartTime.read(t1);
+		  t2=sc_time_stamp();
+		  t=t2-t1;
+		  t_delay = t2-t3;
+		  t3=t2;
 	      /****************************************************************************
 	      * Write out the edge image to a file.
 	      ****************************************************************************/
 	      n = i % AVAIL_IMG;
+	      printf("%9s: Monitor received frame%3d with%9s delay.\n",
+			t2.to_string().c_str(), n+1, t.to_string().c_str());
+	      printf("%9s: %5.3f seconds after previous frame, %5.3f FPS.\n",
+			t2.to_string().c_str(), t_delay.to_double()/1000000000000, 1000000000000/t_delay.to_double());
+
 	      sprintf(outfilename, IMG_OUT, n+1);
 	      if(VERBOSE) printf("Writing the edge image in the file %s.\n", outfilename);
 	      if(write_pgm_image(outfilename, imagein, ROWS, COLS,"", 255) == 0){
 	         fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
 	         exit(1);
 	      }
-						
-			t2 = sc_time_stamp();
-			t = TimeIn.read();
-			delay = t2 - t;
-			printf("%s: Monitor received frame %d with %s delay.\n",t2.to_string().c_str(), i+1, delay.to_string().c_str()); 
-
-			fps = 1 / (t2 - previous).to_seconds();
-			printf("%s: %s after previous frame, %0.3f FPS\n",t2.to_string().c_str(), (t2 - previous).to_string().c_str(), fps);
-			previous = t2; 
-		}
+	   }
+	   if(VERBOSE) printf("Monitor exits simulation.\n");
+	   printf("%9s: Monitor exits simulation.\n", t2.to_string().c_str());
 	   
-		t2 = sc_time_stamp();
-		printf("%s: Monitor exits simulation.\n",t2.to_string().c_str());
 	   sc_stop();	// done testing, quit the simulation
 	}
 	
@@ -410,8 +411,8 @@ SC_MODULE(DataOut)
 
 SC_MODULE(Gaussian_Kernel)
 {
-	sc_fifo_out<FKERNAL> G_Out1;
-	sc_fifo_out<int> C_Out1;
+	sc_fifo_out<FKERNAL> G_Out1,G_Out2;
+	sc_fifo_out<int> C_Out1,C_Out2;
 	FKERNAL gaussian_kernel;
 	int kernel_center;
 	
@@ -451,24 +452,24 @@ SC_MODULE(Gaussian_Kernel)
 	{
 	   int windowsize,       /* Dimension of the gaussian kernel. */
 	       center;           /* Half of the windowsize. */
-	   
+
 	   /****************************************************************************
 	   * Create a 1-dimensional gaussian smoothing kernel.
 	   ****************************************************************************/
 	   while(1)
 	   {
+	      wait(0,SC_MS);
 	      if(VERBOSE) printf("   Computing the gaussian smoothing kernel.\n");
-	      
-			wait(0, SC_MS);
-
-			make_gaussian_kernel(SIGMA, gaussian_kernel, &windowsize);
-	      center = windowsize / 2;	   
+	      make_gaussian_kernel(SIGMA, gaussian_kernel, &windowsize);
+	      center = windowsize / 2;
 	      kernel_center = center;
 	      G_Out1.write(gaussian_kernel);
+	      G_Out2.write(gaussian_kernel);
 	      C_Out1.write(kernel_center);
+	      C_Out2.write(kernel_center);
 	   }
 	}
-	
+
 	SC_CTOR(Gaussian_Kernel)
 	{
 	   SC_THREAD(main);
@@ -482,17 +483,53 @@ SC_MODULE(BlurX)
 	sc_fifo_in<FKERNAL> KernelIn;
 	sc_fifo_in<int> CenterIn;
 	sc_fifo_out<FIMAGE> TempimOut;
-	sc_fifo_out<FKERNAL> KernelOut;
-	sc_fifo_out<int> CenterOut;	
 
 	IMAGE image;
 	FKERNAL kernel;
 	int center;
 	FIMAGE tempim;
 
-	sc_event e_th1, e_th2, e_th3, e_th4, img_receive;
-	
-	void blur_x(int row_start, int row_end, int cols)
+	sc_event data_received_event;
+	sc_event_and_list main_continue;
+	sc_event b0,b1,b2,b3;
+	void BlurX_Slice0()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(69/4,SC_MS);
+	      blur_x(ROWS, COLS, ((ROWS/4)*0), ((ROWS/4)*1));
+	      b0.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurX_Slice1()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(69/4,SC_MS);
+	      blur_x(ROWS, COLS, ((ROWS/4)*1), ((ROWS/4)*2));
+	      b1.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurX_Slice2()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(69/4,SC_MS);
+	      blur_x(ROWS, COLS, ((ROWS/4)*2), ((ROWS/4)*3));
+	      b2.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurX_Slice3()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(69/4,SC_MS);
+	      blur_x(ROWS, COLS, ((ROWS/4)*3), ((ROWS/4)*4));
+	      b3.notify(SC_ZERO_TIME);
+	   }
+	}
+
+	void blur_x(int rows, int cols, int rowStart, int rowEnd)
 	{
 	   int r, c, cc;         /* Counter variables. */
 	   float dot,            /* Dot product summing variable. */
@@ -502,7 +539,7 @@ SC_MODULE(BlurX)
 	   * Blur in the x - direction.
 	   ****************************************************************************/
 	   if(VERBOSE) printf("   Bluring the image in the X-direction.\n");
-	   for(r=row_start;r<=row_end;r++){
+	   for(r=rowStart;r<rowEnd;r++){
 	      for(c=0;c<cols;c++){
 	         dot = 0.0;
 	         sum = 0.0;
@@ -516,184 +553,127 @@ SC_MODULE(BlurX)
 	      }
 	   }
 	}
-
-	void blurx_th1()
-	{	
-		while(1)
-		{
-			wait(img_receive);
-
-			wait(1710/4, SC_MS);		
-			
-			blur_x(0, ((ROWS/4)*1)-1, COLS);
-			e_th1.notify(SC_ZERO_TIME); 
-		}
-	}
-
-   void blurx_th2()
-   {
-      while(1)
-      {
-         wait(img_receive);
-
-			wait(1710/4, SC_MS);
-
-         blur_x(((ROWS/4)*1), ((ROWS/4)*2)-1, COLS);
-         e_th2.notify(SC_ZERO_TIME);
-      }
-   }
 	
-   void blurx_th3()
-   {
-      while(1)
-      {
-         wait(img_receive);
-
-			wait(1710/4, SC_MS);
-
-         blur_x(((ROWS/4)*2), ((ROWS/4)*3)-1, COLS);
-         e_th3.notify(SC_ZERO_TIME);
-      }
-   }
-
-   void blurx_th4()
-   {
-      while(1)
-      {
-         wait(img_receive);
-
-			wait(1710/4, SC_MS);
-
-       	blur_x(((ROWS/4)*3), ROWS-1, COLS);
-         e_th4.notify(SC_ZERO_TIME);
-      }
-   }
+	void before_end_of_elaboration()
+	{
+	   main_continue&=b0;
+	   main_continue&=b1;
+	   main_continue&=b2;
+	   main_continue&=b3;
+	}
 
 	void main(void)
 	{
 	   while(1)
-       	   {
+	   {
 	      ImgIn.read(image);
 	      KernelIn.read(kernel);
 	      CenterIn.read(center);
-	      
-			img_receive.notify(SC_ZERO_TIME);			
-
-			wait(e_th1 & e_th2 & e_th3 & e_th4);	
-
-	      TempimOut.write(tempim);
-			KernelOut.write(kernel);
-			CenterOut.write(center);	
+	      data_received_event.notify(SC_ZERO_TIME);
+	      wait(main_continue);
+	      TempimOut.write(tempim);	
 	   }
 	}
-	
+
 	SC_CTOR(BlurX)
 	{
 	   SC_THREAD(main);
 	   SET_STACK_SIZE
-
-		SC_THREAD(blurx_th1);
-		SET_STACK_SIZE
-
-		SC_THREAD(blurx_th2);
-		SET_STACK_SIZE
-
-		SC_THREAD(blurx_th3);
-		SET_STACK_SIZE
-
-		SC_THREAD(blurx_th4);
-		SET_STACK_SIZE
+	   SC_THREAD(BlurX_Slice0);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurX_Slice1);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurX_Slice2);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurX_Slice3);
+	   SET_STACK_SIZE
 	}
 };
 
 SC_MODULE(BlurY)
-{	
+{
 	sc_fifo_in<FKERNAL> KernelIn;
 	sc_fifo_in<int> CenterIn;
 	sc_fifo_in<FIMAGE> TempimIn;
 	sc_fifo_out<SIMAGE> SmoothedimOut;
-	
+
 	FKERNAL kernel;
 	int center;
 	FIMAGE tempim;
 	SIMAGE smoothedim;
-	
-	sc_event e_th1, e_th2, e_th3, e_th4, tempim_receive;
 
-	void blur_y(int rows, int col_start, int col_end)
+	sc_event data_received_event;
+	sc_event_and_list main_continue;
+	sc_event b0,b1,b2,b3;
+	void BlurY_Slice0()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(172/4,SC_MS);
+	      blur_y(ROWS, COLS, ((COLS/4)*0), ((COLS/4)*1));
+	      b0.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurY_Slice1()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(172/4,SC_MS);
+	      blur_y(ROWS, COLS, ((COLS/4)*1), ((COLS/4)*2));
+	      b1.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurY_Slice2()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(172/4,SC_MS);
+	      blur_y(ROWS, COLS, ((COLS/4)*2), ((COLS/4)*3));
+	      b2.notify(SC_ZERO_TIME);
+	   }
+	}
+	void BlurY_Slice3()
+	{
+	   while(1){
+	      wait(data_received_event);
+	      wait(172/4,SC_MS);
+	      blur_y(ROWS, COLS, ((COLS/4)*3), ((COLS/4)*4));
+	      b3.notify(SC_ZERO_TIME);
+	   }
+	}
+
+	void blur_y(int rows, int cols, int colStart, int colEnd)
 	{
 	   int r, c, rr;         /* Counter variables. */
 	   float dot,            /* Dot product summing variable. */
 	         sum;            /* Sum of the kernel weights variable. */
 
-
 	   /****************************************************************************
 	   * Blur in the y - direction.
 	   ****************************************************************************/
 	   if(VERBOSE) printf("   Bluring the image in the Y-direction.\n");
-	   for(c=col_start;c<=col_end;c++){
+	   for(c=colStart;c<colEnd;c++){
 	      for(r=0;r<rows;r++){
 	         sum = 0.0;
 	         dot = 0.0;
 	         for(rr=(-center);rr<=center;rr++){
 	            if(((r+rr) >= 0) && ((r+rr) < rows)){
-	               dot += tempim[(r+rr)*COLS+c] * kernel[center+rr];
+	               dot += tempim[(r+rr)*cols+c] * kernel[center+rr];
 	               sum += kernel[center+rr];
 	            }
 	         }
-	         smoothedim[r*COLS+c] = (short int)(dot*BOOSTBLURFACTOR/sum + 0.5);
+	         smoothedim[r*cols+c] = (short int)(dot*BOOSTBLURFACTOR/sum + 0.5);
 	      }
 	   }
 	}
 
-	void blury_th1()
+	void before_end_of_elaboration()
 	{
-		while(1)
-		{
-			wait(tempim_receive);
-
-			wait(1820/4, SC_MS);
-			
-			blur_y(ROWS, 0, ((COLS/4)*1)-1);
-			e_th1.notify(SC_ZERO_TIME); 
-		}
+	   main_continue&=b0;
+	   main_continue&=b1;
+	   main_continue&=b2;
+	   main_continue&=b3;
 	}
-   void blury_th2()
-   {
-      while(1)
-      {
-         wait(tempim_receive);
-
-			wait(1820/4, SC_MS);
-			
-         blur_y(ROWS, (COLS/4)*1, ((COLS/4)*2)-1);
-         e_th2.notify(SC_ZERO_TIME);
-      }
-   }
-   void blury_th3()
-   {
-      while(1)
-      {
-         wait(tempim_receive);
-
-         wait(1820/4, SC_MS);
-			
-         blur_y(ROWS, (COLS/4)*2, ((COLS/4)*3)-1);
-         e_th3.notify(SC_ZERO_TIME);
-      }
-   }
-   void blury_th4()
-   {
-      while(1)
-      {
-         wait(tempim_receive);
-
-         wait(1820/4, SC_MS);
-			
-         blur_y(ROWS, (COLS/4)*3, COLS-1);
-         e_th4.notify(SC_ZERO_TIME);
-      }
-   }
 
 	void main(void)
 	{
@@ -702,36 +682,29 @@ SC_MODULE(BlurY)
 	      TempimIn.read(tempim);
 	      KernelIn.read(kernel);
 	      CenterIn.read(center);
-	
-			tempim_receive.notify(SC_ZERO_TIME);		
-      
-			wait(e_th1 & e_th2 & e_th3 & e_th4);
-	
+	      data_received_event.notify(SC_ZERO_TIME);
+	      wait(main_continue);
 	      SmoothedimOut.write(smoothedim);
 	   }
 	}
-	
+
 	SC_CTOR(BlurY)
 	{
 	   SC_THREAD(main);
 	   SET_STACK_SIZE
-	
-		SC_THREAD(blury_th1);
-		SET_STACK_SIZE
-	
-      SC_THREAD(blury_th2);
-      SET_STACK_SIZE
-
-      SC_THREAD(blury_th3);
-      SET_STACK_SIZE
-
-      SC_THREAD(blury_th4);
-      SET_STACK_SIZE
+	   SC_THREAD(BlurY_Slice0);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurY_Slice1);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurY_Slice2);
+	   SET_STACK_SIZE
+	   SC_THREAD(BlurY_Slice3);
+	   SET_STACK_SIZE
 	}
 };
 
 SC_MODULE(Gaussian_Smooth)
-{	
+{
 	sc_fifo_in<IMAGE> ImgIn;
 	sc_fifo_out<SIMAGE> SmoothedimOut;
 
@@ -745,23 +718,23 @@ SC_MODULE(Gaussian_Smooth)
 
 	SC_CTOR(Gaussian_Smooth) 
 	:knl_q1("knl_q1",1)
-	,knl_q2("knl_q2", 1)
+	,knl_q2("knl_q2",1)
 	,tmp_q("tmp_q",1)
 	,int_q1("int_q1",1)
 	,int_q2("int_q2",1)
 	,g_kernel("g_kernel")
 	,blurx("blurx")
 	,blury("blury")
- 	{
+	{
            g_kernel.C_Out1.bind(int_q1);
+           g_kernel.C_Out2.bind(int_q2);
            g_kernel.G_Out1.bind(knl_q1);
+           g_kernel.G_Out2.bind(knl_q2);
 
            blurx.ImgIn.bind(ImgIn);
            blurx.CenterIn.bind(int_q1);
            blurx.KernelIn.bind(knl_q1);
            blurx.TempimOut.bind(tmp_q);
-			  blurx.KernelOut.bind(knl_q2);
-			  blurx.CenterOut.bind(int_q2);
 
            blury.CenterIn.bind(int_q2);
            blury.KernelIn.bind(knl_q2);
@@ -773,7 +746,7 @@ SC_MODULE(Gaussian_Smooth)
 SC_MODULE(Derivative_X_Y)
 {
 	sc_fifo_in<SIMAGE>	SmoothedimIn;
-	sc_fifo_out<SIMAGE> XOut1, YOut1;
+	sc_fifo_out<SIMAGE> XOut1, XOut2, YOut1, YOut2;
 	SIMAGE smoothedim, delta_x, delta_y;
 	
 	/*******************************************************************************
@@ -820,7 +793,7 @@ SC_MODULE(Derivative_X_Y)
 	         delta_y[pos] = smoothedim[pos+cols] - smoothedim[pos-cols];
 	      }
 	      delta_y[pos] = smoothedim[pos] - smoothedim[pos-cols];
-	   }
+		}
 	}
 
 	void main(void)
@@ -828,12 +801,12 @@ SC_MODULE(Derivative_X_Y)
 	   while(1)
 	   {
 	      SmoothedimIn.read(smoothedim);
-	      
-			wait(480, SC_MS);
-
-			derivative_x_y(ROWS, COLS);
+	      wait(154,SC_MS);
+	      derivative_x_y(ROWS, COLS);
 	      XOut1.write(delta_x);
+	      XOut2.write(delta_x);
 	      YOut1.write(delta_y);
+	      YOut2.write(delta_y);
 	   }
 	}
 	
@@ -848,8 +821,11 @@ SC_MODULE(Derivative_X_Y)
 SC_MODULE(Magnitude_X_Y)
 {
 	sc_fifo_in<SIMAGE> XIn, YIn;
-	sc_fifo_out<SIMAGE>	MagnitudeOut1, XOut, YOut;
+	sc_fifo_out<SIMAGE>	MagnitudeOut1, MagnitudeOut2;
+	sc_fifo_in<SIMAGE> GradxIn_ByPass, GradyIn_ByPass; 
+	sc_fifo_out<SIMAGE> GradxOut_ByPass, GradyOut_ByPass;
 	SIMAGE delta_x, delta_y, magnitude;
+	SIMAGE Gradx_ByPass,Grady_ByPass;
 	
 	/*******************************************************************************
 	* PROCEDURE: magnitude_x_y
@@ -877,13 +853,14 @@ SC_MODULE(Magnitude_X_Y)
 	   {
 	      XIn.read(delta_x);
 	      YIn.read(delta_y);
-	      
-			wait(1030, SC_MS);
-
-			magnitude_x_y(ROWS, COLS);
+		  GradxIn_ByPass.read(Gradx_ByPass);
+		  GradyIn_ByPass.read(Grady_ByPass);
+	      wait(35,SC_MS);
+	      magnitude_x_y(ROWS, COLS);
 	      MagnitudeOut1.write(magnitude);
-			XOut.write(delta_x);
-			YOut.write(delta_y);
+	      MagnitudeOut2.write(magnitude);
+		  GradxOut_ByPass.write(Gradx_ByPass);
+		  GradyOut_ByPass.write(Grady_ByPass);
 	   }
 	}
 	
@@ -897,10 +874,10 @@ SC_MODULE(Magnitude_X_Y)
 
 SC_MODULE(Non_Max_Supp)
 {
-	sc_fifo_in<SIMAGE> GradxIn, GradyIn, MagIn;
-	sc_fifo_out<SIMAGE> MagOut;
+	sc_fifo_in<SIMAGE> GradxIn, GradyIn, MagIn, MagIn_ByPass;
 	sc_fifo_out<IMAGE> NmsOut;
-	SIMAGE gradx, grady, mag;
+	sc_fifo_out<SIMAGE> MagOut_ByPass;
+	SIMAGE gradx, grady, mag, mag_bp;
 	IMAGE nms;
 	
 	/*******************************************************************************
@@ -916,8 +893,8 @@ SC_MODULE(Non_Max_Supp)
 	    short *magrowptr,*magptr;
 	    short *gxrowptr,*gxptr;
 	    short *gyrowptr,*gyptr,z1,z2;
-	    short m00; short gx=0; short gy=0;
-	    float mag1, mag2; float xperp=0;float yperp=0;
+	    short m00,gx=0,gy=0;
+	    float mag1,mag2,xperp=0,yperp=0;
 	    unsigned char *resultrowptr, *resultptr;
 
 	   /****************************************************************************
@@ -949,9 +926,13 @@ SC_MODULE(Non_Max_Supp)
 	            *resultptr = (unsigned char) NOEDGE;
 	         }
 	         else{
-	            xperp = -(gx = *gxptr)/((float)m00);
-	            yperp = (gy = *gyptr)/((float)m00);
-	         }
+	            //xperp = -(gx = *gxptr)/((float)m00);
+	            //yperp = (gy = *gyptr)/((float)m00);
+	         	gx = *gxptr;
+					gy = *gyptr;
+					xperp = -(gx<<16)/m00;
+					yperp = (gy<<16)/m00;
+				}
 
 	         if(gx >= 0){
 	            if(gy >= 0){
@@ -1115,14 +1096,13 @@ SC_MODULE(Non_Max_Supp)
 	   {
 	      GradxIn.read(gradx);
 	      GradyIn.read(grady);
-	      MagIn.read(mag);    
-	      
-			wait(830, SC_MS);
-
-			non_max_supp(ROWS, COLS, result);
+	      MagIn.read(mag);
+		  MagIn_ByPass.read(mag_bp);
+	      wait(134,SC_MS);		  
+	      non_max_supp(ROWS, COLS, result);
 	      nms = result;
 	      NmsOut.write(nms);
-			MagOut.write(mag);
+		  MagOut_ByPass.write(mag_bp);
 	   }
 	}
 	
@@ -1282,10 +1262,8 @@ SC_MODULE(Apply_Hysteresis)
 	   {
 	      MagIn.read(mag);
 	      NmsIn.read(nms);
-	      
-			wait(670, SC_MS);
-
-			apply_hysteresis(ROWS, COLS, TLOW, THIGH, EdgeImage);
+	      wait(125,SC_MS);
+	      apply_hysteresis(ROWS, COLS, TLOW, THIGH, EdgeImage);
 	      ImgOut.write(EdgeImage);
 	   }
 	}
@@ -1302,7 +1280,7 @@ SC_MODULE(DUT)
 {
 	sc_fifo_in<IMAGE> ImgIn;
 	sc_fifo_out<IMAGE> ImgOut;
-	sc_fifo<SIMAGE> q1, q2, q3, q4, q5, q6, q7;
+	sc_fifo<SIMAGE> q1, q2, q3, q4, q5, q6, q7, q3_bp, q5_bp, q7_bp;  //bp stands for bypassing
 	sc_fifo<IMAGE> nms;
 
 	Gaussian_Smooth gaussian_smooth;
@@ -1310,7 +1288,7 @@ SC_MODULE(DUT)
 	Magnitude_X_Y magnitude_x_y;
 	Non_Max_Supp non_max_supp;
 	Apply_Hysteresis apply_hysteresis;
-	
+
 	void before_end_of_elaboration(){
 		
 	}
@@ -1323,6 +1301,9 @@ SC_MODULE(DUT)
 	,q5("q5",1)
 	,q6("q6",1)
 	,q7("q7",1)
+	,q3_bp("q3_bp",1)
+	,q5_bp("q5_bp",1)
+	,q7_bp("q7_bp",1)
 	,nms("nms",1)
 	,gaussian_smooth("gaussian_smooth")
 	,derivative_x_y("derivative_x_y")
@@ -1332,24 +1313,30 @@ SC_MODULE(DUT)
 	{
 	   gaussian_smooth.ImgIn.bind(ImgIn);
 	   gaussian_smooth.SmoothedimOut.bind(q1);
-		        
+
            derivative_x_y.SmoothedimIn.bind(q1);
            derivative_x_y.XOut1.bind(q2);
+           derivative_x_y.XOut2.bind(q3);
            derivative_x_y.YOut1.bind(q4);
+           derivative_x_y.YOut2.bind(q5);
 
            magnitude_x_y.XIn.bind(q2);
            magnitude_x_y.YIn.bind(q4);
+		   magnitude_x_y.GradxIn_ByPass(q3);
+		   magnitude_x_y.GradyIn_ByPass(q5);
            magnitude_x_y.MagnitudeOut1.bind(q6);
-			  magnitude_x_y.XOut.bind(q3);
-			  magnitude_x_y.YOut.bind(q5);
+           magnitude_x_y.MagnitudeOut2.bind(q7);
+		   magnitude_x_y.GradxOut_ByPass(q3_bp);
+		   magnitude_x_y.GradyOut_ByPass(q5_bp);
 
-           non_max_supp.GradxIn.bind(q3);
-           non_max_supp.GradyIn.bind(q5);
+           non_max_supp.GradxIn.bind(q3_bp);
+           non_max_supp.GradyIn.bind(q5_bp);
            non_max_supp.MagIn.bind(q6);
+		   non_max_supp.MagIn_ByPass.bind(q7);
            non_max_supp.NmsOut.bind(nms);
-			  non_max_supp.MagOut.bind(q7);
+		   non_max_supp.MagOut_ByPass.bind(q7_bp);
 
-           apply_hysteresis.MagIn.bind(q7);
+           apply_hysteresis.MagIn.bind(q7_bp);
            apply_hysteresis.NmsIn.bind(nms);
            apply_hysteresis.ImgOut.bind(ImgOut);
 	}
@@ -1388,23 +1375,24 @@ SC_MODULE(Top)
 {
 	sc_fifo<IMAGE> q1;
 	sc_fifo<IMAGE> q2;
-	sc_fifo<sc_time> tp;
+	sc_fifo<sc_time> qt;
 	Stimulus stimulus;
 	Platform platform;
 	Monitor monitor;
 
 	void before_end_of_elaboration(){
 	   stimulus.ImgOut.bind(q1);
-		stimulus.TimeOut.bind(tp);
+	   stimulus.StartTime.bind(qt);
 	   platform.ImgIn.bind(q1);
 	   platform.ImgOut.bind(q2);
 	   monitor.ImgIn.bind(q2);
-		monitor.TimeIn.bind(tp);
+	   monitor.StartTime.bind(qt);
 	}
 
 	SC_CTOR(Top)
 	:q1("q1",1)
 	,q2("q2",1)
+	,qt("qt",30)
 	,stimulus("stimulus")
 	,platform("platform")
 	,monitor("monitor")
